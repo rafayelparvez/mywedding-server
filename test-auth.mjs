@@ -1,11 +1,14 @@
 // Server-side validation of the Better Auth JWT/JWKS API usage.
 import { ObjectId } from 'mongodb';
 import { db } from './src/config/db.js';
-import { auth, adapter } from './src/auth/index.js';
+import { auth, authAdapter } from './src/auth/index.js';
 
 const log = (label, value) => console.log(label + ' ' + JSON.stringify(value));
 
 // 1) Create a test user (mimic what Better Auth stores).
+// Remove any leftover test user from a previous run first.
+await db.collection('user').deleteOne({ email: 'auth-test@example.com' });
+
 const _id = new ObjectId();
 await db.collection('user').insertOne({
   _id,
@@ -31,6 +34,7 @@ log('3) verifyJWT payload:', verified?.payload
   : verified?.payload ?? null);
 
 // 4) Adapter lookup — what the middleware uses to load the user.
+const adapter = await authAdapter();
 const found = await adapter.findOne({ model: 'user', where: [{ field: 'id', value: user.id }] });
 log('4) adapter.findOne:', found ? { id: found.id, email: found.email, banned: found.banned ?? null } : null);
 

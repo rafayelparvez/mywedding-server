@@ -2,7 +2,7 @@ import { db } from '../config/db.js';
 
 export function healthRoutes(app) {
   app.get('/', (req, res) => {
-    res.send('Server is running fine');
+    res.send({ message: "Server running successfully"});
   });
 
   app.get('/health', async (req, res) => {

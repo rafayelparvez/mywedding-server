@@ -1,4 +1,4 @@
-import { auth, adapter } from "../auth/index.js";
+import { auth, authAdapter } from "../auth/index.js";
 import { env } from "../config/env.js";
 
 /** Extracts the bearer token from the Authorization header, or null. */
@@ -40,6 +40,7 @@ export async function authenticate(req, res, next) {
     if (!payload?.sub) return unauthorized(res);
 
     // Load the current user from the database.
+    const adapter = await authAdapter();
     const user = await adapter.findOne({ model: "user", where: [{ field: "id", value: payload.sub }] });
     if (!user) return unauthorized(res);
     if (user.banned === true) return unauthorized(res, "User account is blocked");

@@ -4,8 +4,7 @@ import { mongodbAdapter } from "@better-auth/mongo-adapter";
 
 import { client, db } from "../config/db.js";
 import { env } from "../config/env.js";
-
-const adapter = mongodbAdapter(db, { client });
+import { DEFAULT_USER_ROLE } from "./roles.js";
 
 // Server-side Better Auth instance used to VERIFY tokens issued by the
 // Next.js app's Better Auth (same secret + same MongoDB database, so it
@@ -15,8 +14,32 @@ export const auth = betterAuth({
   baseURL: env.BETTER_AUTH_URL,
   secret: env.BETTER_AUTH_SECRET,
   emailAndPassword: { enabled: false },
-  database: adapter,
+  database: mongodbAdapter(db, { client }),
   plugins: [jwt()],
+  // `banned` is Better Auth's "blocked" flag (admin plugin). Declared as
+  // read-only here: nothing on the server can set it via Better Auth APIs —
+  // only direct DB changes can mark an account blocked.
+  user: {
+    additionalFields: {
+      banned: {
+        type: "boolean",
+        required: false,
+        input: false,
+      },
+      // Mirrors the frontend's Better Auth user schema
+      // (mywedding/src/lib/auth.ts): user/vendor/admin with default "user".
+      // Read-only here so nothing on the server can change roles.
+      role: {
+        type: "string",
+        required: false,
+        defaultValue: DEFAULT_USER_ROLE,
+        input: false,
+      },
+    },
+  },
 });
 
-export { adapter };
+// The resolved Better Auth adapter (the instance exposes it on $context).
+export async function authAdapter() {
+  return (await auth.$context).adapter;
+}

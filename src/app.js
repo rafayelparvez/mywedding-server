@@ -6,6 +6,8 @@ import { authenticate } from './middleware/authenticate.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { healthRoutes } from './routes/health.js';
 import { meRoutes } from './routes/me.js';
+import { adminUsersRoutes } from './routes/adminUsers.js';
+import { profileRoutes } from './routes/profile.js';
 
 export function createApp() {
   const app = express();
@@ -20,6 +22,8 @@ export function createApp() {
 
   // Protect all /api routes: verify the Better Auth JWT, then attach req.user.
   app.use('/api', authenticate);
+  profileRoutes(app);
+  adminUsersRoutes(app);
   meRoutes(app);
 
   // 404: anything unmatched becomes a JSON error response (see errorHandler).

@@ -1,5 +1,6 @@
 ﻿import { createApp } from "./src/app.js";
 import { close, connect } from "./src/config/db.js";
+import { ensureCollections, ensureIndexes } from "./src/db/collections.js";
 import { env } from "./src/config/env.js";
 
 const app = createApp();
@@ -20,6 +21,12 @@ process.once("SIGINT", () => shutdown("SIGINT"));
 
 try {
   await connect(); // Fail fast if the database is unreachable.
+
+  // Business collections (services, bookings, transactions) — idempotent.
+  // Users are owned by Better Auth (src/auth) — no auth collections created here.
+  await ensureCollections();
+  await ensureIndexes();
+
   server = app.listen(env.PORT, () => {
     console.log(`My Wedding running on port ${env.PORT}`);
   });

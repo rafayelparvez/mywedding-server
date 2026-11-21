@@ -43,7 +43,7 @@ export async function authenticate(req, res, next) {
     const adapter = await authAdapter();
     const user = await adapter.findOne({ model: "user", where: [{ field: "id", value: payload.sub }] });
     if (!user) return unauthorized(res);
-    if (user.banned === true) return unauthorized(res, "User account is blocked");
+    if (user.isBlocked === true) return unauthorized(res, "User account is blocked");
 
     req.user = user;
     return next();

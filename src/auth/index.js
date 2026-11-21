@@ -21,11 +21,16 @@ export const auth = betterAuth({
   // only direct DB changes can mark an account blocked.
   user: {
     additionalFields: {
-      banned: {
+      // Business fields from the MyWedding schema (SERVER_AUDIT.md §13).
+      // Better Auth core user fields: name, email, image.
+      isBlocked: {
         type: "boolean",
         required: false,
         input: false,
       },
+      businessName: { type: "string", required: false },
+      subscriptionPlan: { type: "string", required: false },
+      subscriptionExpiresAt: { type: "date", required: false },
       // Mirrors the frontend's Better Auth user schema
       // (mywedding/src/lib/auth.ts): user/vendor/admin with default "user".
       // Read-only here so nothing on the server can change roles.

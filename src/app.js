@@ -8,6 +8,9 @@ import { healthRoutes } from './routes/health.js';
 import { meRoutes } from './routes/me.js';
 import { adminUsersRoutes } from './routes/adminUsers.js';
 import { profileRoutes } from './routes/profile.js';
+import { publicServicesRoutes } from './routes/publicServices.js';
+import { vendorServicesRoutes } from './routes/vendorServices.js';
+import { adminServicesRoutes } from './routes/adminServices.js';
 
 export function createApp() {
   const app = express();
@@ -20,9 +23,14 @@ export function createApp() {
 
   healthRoutes(app);
 
-  // Protect all /api routes: verify the Better Auth JWT, then attach req.user.
+  // Public services — must be registered before the /api authentication middleware.
+  publicServicesRoutes(app);
+
+  // Protect all other /api routes: verify the Better Auth JWT, then attach req.user.
   app.use('/api', authenticate);
   profileRoutes(app);
+  vendorServicesRoutes(app);
+  adminServicesRoutes(app);
   adminUsersRoutes(app);
   meRoutes(app);
 

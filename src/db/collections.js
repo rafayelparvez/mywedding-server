@@ -21,13 +21,15 @@ const servicesSchema = {
   required: ["vendorId", "serviceName", "category", "description", "price", "status", "createdAt"],
   properties: {
     vendorId: { bsonType: "string", description: "Better Auth user id of the owning vendor" },
+    // Set to true by admins (approve). Not user-editable.
+    approved: { bsonType: "bool" },
     serviceName: { bsonType: "string", minLength: 1, description: "Name of the offered service" },
     category: { bsonType: "string", minLength: 1 },
     description: { bsonType: "string", minLength: 1 },
     price: { bsonType: ["double", "int"], minimum: 0, description: "Service price (non-negative)" },
     location: { bsonType: "string", description: "Where the service is offered" },
     images: { bsonType: "array", items: { bsonType: "string" }, description: "Image URLs" },
-    status: { bsonType: "string", enum: ["active", "inactive"] },
+    status: { bsonType: "string", enum: ["pending", "active", "inactive"] },
     createdAt: { bsonType: "date" },
   },
 };

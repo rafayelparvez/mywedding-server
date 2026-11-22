@@ -1,4 +1,5 @@
 import { authAdapter } from "../auth/index.js";
+import { profileImageUploadMiddleware } from "../utils/imgbb.js";
 
 // Fields users may change on their own profile. Everything else (role,
 // blocked status, subscription info, …) is admin/read-only.
@@ -46,22 +47,16 @@ export function profileRoutes(app) {
   });
 
   // PATCH /api/profile/image — update the profile image.
-  app.patch("/api/profile/image", async (req, res, next) => {
-    const body = req.body ?? {};
-
-    const keys = Object.keys(body);
-    if (keys.length !== 1 || keys[0] !== "image") {
-      return res.status(400).json({
-        error: { status: 400, message: 'Only the "image" field can be set via /api/profile/image' },
-      });
-    }
-
-    const image = body.image;
-    if (typeof image !== "string" || image.length === 0) {
-      return res.status(400).json({ error: { status: 400, message: "image must be a non-empty string" } });
-    }
-
+  // Expects multipart/form-data with a file field named "image".
+  // The imgbb middleware will validate, upload to ImgBB, and set req.body.image to the hosted URL.
+  app.patch("/api/profile/image", profileImageUploadMiddleware, async (req, res, next) => {
     try {
+      const image = req.body?.image;
+
+      if (!image || typeof image !== "string") {
+        return res.status(400).json({ error: { status: 400, message: "image URL not available" } });
+      }
+
       const adapter = await authAdapter();
       const updated = await adapter.update({
         model: "user",

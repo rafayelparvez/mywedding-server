@@ -13,6 +13,7 @@ import { vendorServicesRoutes } from './routes/vendorServices.js';
 import { adminServicesRoutes } from './routes/adminServices.js';
 import { bookingsRoutes } from './routes/bookings.js';
 import { vendorBookingsRoutes } from './routes/vendorBookings.js';
+import { serviceImageRoutes } from './routes/serviceImages.js';
 
 export function createApp() {
   const app = express();
@@ -41,6 +42,9 @@ export function createApp() {
 
   // Vendor booking management routes — protected by vendor authentication
   vendorBookingsRoutes(app);
+
+  // Service image upload routes — protected by vendor authentication
+  serviceImageRoutes(app);
 
   // 404: anything unmatched becomes a JSON error response (see errorHandler).
   app.use((req, res, next) => {

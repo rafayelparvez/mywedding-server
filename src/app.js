@@ -11,6 +11,8 @@ import { profileRoutes } from './routes/profile.js';
 import { publicServicesRoutes } from './routes/publicServices.js';
 import { vendorServicesRoutes } from './routes/vendorServices.js';
 import { adminServicesRoutes } from './routes/adminServices.js';
+import { bookingsRoutes } from './routes/bookings.js';
+import { vendorBookingsRoutes } from './routes/vendorBookings.js';
 
 export function createApp() {
   const app = express();
@@ -33,6 +35,12 @@ export function createApp() {
   adminServicesRoutes(app);
   adminUsersRoutes(app);
   meRoutes(app);
+
+  // Customer booking routes — protected by authentication
+  bookingsRoutes(app);
+
+  // Vendor booking management routes — protected by vendor authentication
+  vendorBookingsRoutes(app);
 
   // 404: anything unmatched becomes a JSON error response (see errorHandler).
   app.use((req, res, next) => {

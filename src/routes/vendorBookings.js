@@ -1,7 +1,8 @@
 import { bookings } from '../db/collections.js';
 import { ObjectId } from 'mongodb';
 import { findServiceById, getUserById, isPremiumVendor } from '../utils/services.js';
-import { authenticate, requireVendor } from '../middleware/authorize.js';
+import { authenticate } from '../middleware/authenticate.js';
+import { requireVendor } from '../middleware/authorize.js';
 
 /**
  * Vendor booking management routes.

@@ -9,8 +9,6 @@
 | `pnpm start` | Start the server (node index.js) |
 | `pnpm dev` | Start the server with auto-reload (node --watch index.js) |
 | `pnpm test` | Run tests (currently a stub; real tests under `test/` when added) |
-| `pnpm lint` | Run linter (configured in `package.json` when added) |
-| `pnpm typecheck` | Run type checker (configured in `package.json` when added) |
 
 > **Note:** `start` and `dev` scripts are defined in `package.json`. The `test` script is currently a stub that exits with an error — real tests will be added under `test/` as features land.
 
@@ -47,6 +45,7 @@ This is a **layered Express app** (server entry → config → db → auth → r
 | `src/routes/` | Express routes mounted under `/api/` prefix (see `src/app.js`). |
 | `src/db/collections.js` | MongoDB collection handles: `services`, `bookings`, `transactions`. Also `ensureCollections()` and `ensureIndexes()` (idempotent). |
 | `src/utils/services.js` | Shared validators/helpers: `isNonEmptyString`, `isNonNegativeNumber`, `isPremiumVendor`, `findServiceById`, `activeServiceCount`, `getUserById`, `badRequest`, `notFound`, `forbidden`. |
+| `src/utils/imgbb.js` | Server-side ImgBB image upload utility with type/size validation. Uses built-in `fetch` (no `node-fetch` dependency). |
 | `src/app.js` | Express app factory: cors, json body parser, health/routes, authenticate middleware, route mounts, 404 handler, error handler. |
 
 ### Execution flow (request lifecycle)
@@ -96,7 +95,7 @@ All public API routes are under `/api/`. The prefix is mounted in `src/app.js` v
 - `GET /api/me` — current user profile
 - `GET /api/profile` — current user profile (read)
 - `PATCH /api/profile` — update name
-- `PATCH /api/profile/image` — update profile image
+- `PATCH /api/profile/image` — update profile image (via ImgBB)
 - `POST /api/services` — vendor creates a service (status: pending by default)
 - `GET /api/vendor/services` — vendor lists own services
 - `PATCH /api/services/:id` — vendor updates own service (status locked; publish via `/publish`)
@@ -130,19 +129,6 @@ The order of middleware in `src/app.js` is significant and should not be changed
 6. 404 handler (unmatched methods/URLs → JSON error)
 7. `app.use(errorHandler)` — centralized error responses (must be last)
 
-## Testing
-
-- No test runner is configured yet. When tests are added, they will live under `test/` and use the `pnpm test` script.
-- Tests should use an in-memory or separate MongoDB instance. Do not run tests against the production Atlas cluster.
-- The `ensureCollections()` and `ensureIndexes()` functions are idempotent and safe to call during test setup.
-
-## Deployment / Infra
-
-- The server is a single-process Node.js app. For production, use a process manager (PM2, systemd) or a container (Docker) with health checks.
-- The `GET /health` endpoint returns `{ ok: true, db: "mywedding" }` after running `db.admin().ping()`. Use this for load balancer health checks.
-- Graceful shutdown: SIGTERM/SIGINT → `server.close()` → `client.close()` → `process.exit(0)`. See `index.js`.
-- Do not rely on `PORT=8000` being the only port; the code validates `PORT` is an integer in 1–65535 and falls back to `8000` only via `process.env.PORT || 8000` in `env.js`.
-
 ## Things That Will Trip Up an Unprepared Agent
 
 | Gotcha | Why it matters | Fix / mitigation |
@@ -154,5 +140,7 @@ The order of middleware in `src/app.js` is significant and should not be changed
 | Role hierarchy confusion | `USER_ROLES = ["user", "vendor", "admin"]` but access is hierarchical: `user < vendor < admin`. `canAccess(userRole, requiredRole)` returns true when the user's level >= required level. | Use `requireUser`, `requireVendor`, `requireAdmin` helpers rather than comparing levels manually. |
 | `authAdapter()` is async | `authAdapter()` resolves the Better Auth adapter via `auth.$context`. It must be `await`ed before calling `adapter.findOne`, `adapter.update`, etc. | All route handlers already `await authAdapter()` — follow the same pattern. |
 | `express.json()` must precede body parsing | If you add routes that read `req.body`, `express.json()` must be mounted before them. It is in `src/app.js` line 22, but adders of new routes must respect this. | New route handlers must not assume `req.body` is populated without `express.json()` being active. |
-| `ensureCollections()` idempotency | Safe to call on every restart, but if you add new collections, also add them to the `ensureCollections()` `Promise.all`. | When adding a new domain collection, update `src/db/collections.js` and `ensureCollections()`. |
+| `node-fetch` not installed | `src/utils/imgbb.js` uses the built-in `fetch` — do not import from `node-fetch` unless added to `package.json`. | The file was fixed to use the global `fetch`; no external dependency needed. |
+| Import `authenticate` from wrong module | `import { authenticate } from '../middleware/authorize.js'` fails because `authorize.js` only exports `requireAuth`. Import from `../middleware/authenticate.js` instead. | Follow the import pattern in `src/routes/bookings.js` (import from `authenticate.js`) and `src/routes/vendorBookings.js` (import `authenticate` from `authenticate.js`, `requireVendor` from `authorize.js`). |
 | Graceful shutdown not triggered in all paths | `process.once("SIGTERM", ...)` and `process.once("SIGINT", ...)` are set in `index.js`. If the process is killed with `SIGKILL`, handlers won't run. | For production, prefer graceful signals (stop/start) over `kill -9`. |
+| imgbb API key missing | `IMGBB_API_KEY` must be set in `.env`; the utility throws if it's undefined. | Add `IMGBB_API_KEY=your_key_here` to `.env` (the file already has a placeholder key). |

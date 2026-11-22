@@ -1,4 +1,5 @@
-import fetch from 'node-fetch';
+// Built-in fetch is available in Node.js 18+ (Express 5.3 requires Node ≥ 18).
+// No external dependency needed.
 
 // Supported image MIME types for ImgBB upload
 export const SUPPORTED_IMAGE_TYPES = [

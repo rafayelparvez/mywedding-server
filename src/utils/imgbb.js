@@ -1,126 +1,123 @@
-// Built-in fetch is available in Node.js 18+ (Express 5.3 requires Node ≥ 18).
-// No external dependency needed.
+// Built-in fetch is available in Node.js 18+ (Express 5 requires Node ≥ 18).
+// No external HTTP dependency needed.
+
+import { env } from "../config/env.js";
 
 // Supported image MIME types for ImgBB upload
 export const SUPPORTED_IMAGE_TYPES = [
-  'image/jpeg',
-  'image/jpg',
-  'image/png',
-  'image/gif',
-  'image/webp',
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/gif",
+  "image/webp",
 ];
 
 // Maximum file size in bytes (10MB)
 export const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
-/**
- * Upload an image buffer to ImgBB and return the hosted URL.
- * This function runs entirely on the server — the IMGBB_API_KEY is never
- * sent to the browser.
- *
- * @param {Buffer} imageBuffer - The image file buffer
- * @param {string} mimeType - The MIME type of the image
- * @returns {Promise<string>} The hosted image URL
- * @throws {Error} If the upload fails or validation fails
- */
-export async function uploadImage(imageBuffer, mimeType) {
-  // 1. Validate MIME type
-  if (!SUPPORTED_IMAGE_TYPES.includes(mimeType)) {
-    const supported = SUPPORTED_IMAGE_TYPES.join(', ');
-    throw new Error(`Unsupported image type: ${mimeType}. Supported types: ${supported}`);
+/** Error type that carries a safe HTTP status for the centralized handler. */
+export class ImageUploadError extends Error {
+  constructor(message, status = 400) {
+    super(message);
+    this.name = "ImageUploadError";
+    this.status = status;
+    this.expose = true;
   }
+}
 
-  // 2. Validate file size
-  if (imageBuffer.length > MAX_FILE_SIZE) {
-    throw new Error(`File too large: ${imageBuffer.length} bytes. Maximum: ${MAX_FILE_SIZE} bytes (10MB)`);
+/** Detects the real image type from magic bytes (never trust the client MIME). */
+function detectImageMime(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) return null;
+
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return "image/jpeg";
   }
-
-  // 3. Convert buffer to base64 string
-  const base64String = imageBuffer.toString('base64');
-
-  // 4. Retrieve ImgBB API key from server-side environment only
-  //    (dotenv is loaded in src/config/env.js, process.env is available here)
-  const apiKey = process.env.IMGBB_API_KEY;
-
-  if (!apiKey) {
-    throw new Error('ImgBB API key not configured on the server');
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    return "image/png";
   }
-
-  // 5. Call ImgBB API
-  const url = 'https://api.imgbb.com/1/upload';
-  const params = {
-    key: apiKey,
-    image: base64String,
-  };
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(params),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`ImgBB API error (${response.status}): ${errorText}`);
+  if (buffer.subarray(0, 6).toString("ascii") === "GIF87a" || buffer.subarray(0, 6).toString("ascii") === "GIF89a") {
+    return "image/gif";
   }
-
-  const data = await response.json();
-
-  if (data.error) {
-    throw new Error(`ImgBB error: ${data.error.message || 'Unknown ImgBB error'}`);
+  if (
+    buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
+    buffer.subarray(8, 12).toString("ascii") === "WEBP"
+  ) {
+    return "image/webp";
   }
+  return null;
+}
 
-  // 6. Return the hosted image URL
-  // The response structure: { success: true, data: { display_url: '...', ... } }
-  if (data.data && data.data.display_url) {
-    return data.data.display_url;
-  }
-
-  throw new Error('Unexpected ImgBB response format: missing display_url');
+function mimeMatches(detected, declared) {
+  if (!detected || !declared) return false;
+  if (detected === declared) return true;
+  // image/jpg is a common non-standard alias for image/jpeg.
+  return detected === "image/jpeg" && declared === "image/jpg";
 }
 
 /**
- * Middleware for handling profile image uploads.
- * Expects a multipart/form-data POST with a file field named "image".
- * Validates file type and size, uploads to ImgBB, and attaches the URL
- * to the authenticated user's profile.
+ * Upload an image buffer to ImgBB and return the hosted URL.
+ * Runs entirely on the server — the API key is never sent to the browser.
+ *
+ * @param {Buffer} imageBuffer - The image file buffer
+ * @param {string} mimeType - The declared MIME type
+ * @returns {Promise<string>} The hosted image URL
+ * @throws {ImageUploadError} For invalid input / configuration / upstream errors
  */
-export function profileImageUploadMiddleware() {
-  return async (req, res, next) => {
-    try {
-      // Multer (or similar) should have populated req.file
-      // If no file uploaded, delegate to the next handler
-      if (!req.file) {
-        return next();
-      }
+export async function uploadImage(imageBuffer, mimeType) {
+  if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) {
+    throw new ImageUploadError("Image file is empty");
+  }
 
-      // Validate MIME type
-      if (!SUPPORTED_IMAGE_TYPES.includes(req.file.mimeType)) {
-        return res.status(400).json({
-          error: { status: 400, message: `Unsupported image type: ${req.file.mimeType}` },
-        });
-      }
+  if (!SUPPORTED_IMAGE_TYPES.includes(mimeType)) {
+    throw new ImageUploadError(
+      `Unsupported image type: ${mimeType}. Supported types: ${SUPPORTED_IMAGE_TYPES.join(", ")}`
+    );
+  }
 
-      // Validate file size
-      if (req.file.size > MAX_FILE_SIZE) {
-        return res.status(400).json({
-          error: { status: 400, message: `File too large. Maximum: ${MAX_FILE_SIZE} bytes (10MB)` },
-        });
-      }
+  if (imageBuffer.length > MAX_FILE_SIZE) {
+    throw new ImageUploadError("File too large. Maximum size is 10MB.", 413);
+  }
 
-      // Upload to ImgBB and get the hosted URL
-      const hostedUrl = await uploadImage(req.file.buffer, req.file.mimeType);
+  const detected = detectImageMime(imageBuffer);
+  if (!mimeMatches(detected, mimeType)) {
+    throw new ImageUploadError("File content does not match a supported image type");
+  }
 
-      // Attach the URL to the request body for the route handler
-      // The existing route expects req.body.image to be a string URL
-      req.body = { image: hostedUrl };
+  const apiKey = env.IMGBB_API_KEY;
+  if (!apiKey) {
+    throw new ImageUploadError("Image uploads are not configured on the server", 503);
+  }
 
-      next();
-    } catch (err) {
-      console.error('[imgbb] upload failed:', err);
-      next(err);
-    }
-  };
+  const response = await fetch("https://api.imgbb.com/1/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      key: apiKey,
+      image: imageBuffer.toString("base64"),
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    console.error(`[imgbb] upstream error (${response.status}):`, errorText.slice(0, 500));
+    throw new ImageUploadError("Image upload failed. Please try again.", 502);
+  }
+
+  const data = await response.json().catch(() => null);
+  const hostedUrl = data?.data?.display_url;
+  if (!hostedUrl || typeof hostedUrl !== "string") {
+    console.error("[imgbb] unexpected response shape");
+    throw new ImageUploadError("Image upload failed. Please try again.", 502);
+  }
+
+  return hostedUrl;
 }

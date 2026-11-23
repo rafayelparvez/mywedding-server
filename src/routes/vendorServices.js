@@ -1,25 +1,29 @@
 import { ObjectId } from "mongodb";
 
 import { requireVendor } from "../middleware/authorize.js";
+import { serviceWriteLimiter } from "../middleware/rateLimit.js";
 import { services } from "../db/collections.js";
 import {
+  MAX_SERVICE_IMAGES,
+  SERVICE_TEXT_LIMITS,
   activeServiceCount,
   badRequest,
   findServiceById,
   forbidden,
+  isBoundedString,
   isPremiumVendor,
-  isNonEmptyString,
+  isSafeImageReference,
   isNonNegativeNumber,
   notFound,
 } from "../utils/services.js";
 
 const fieldErrors = {
-  serviceName: "serviceName must be a non-empty string",
-  category: "category must be a non-empty string",
-  description: "description must be a non-empty string",
+  serviceName: `serviceName must be a non-empty string of at most ${SERVICE_TEXT_LIMITS.serviceName} characters`,
+  category: `category must be a non-empty string of at most ${SERVICE_TEXT_LIMITS.category} characters`,
+  description: `description must be a non-empty string of at most ${SERVICE_TEXT_LIMITS.description} characters`,
   price: "price must be a non-negative number",
-  location: "location must be a non-empty string",
-  images: "images must be an array of non-empty strings",
+  location: `location must be a non-empty string of at most ${SERVICE_TEXT_LIMITS.location} characters`,
+  images: `images must be an array of at most ${MAX_SERVICE_IMAGES} safe image URLs/data URLs`,
 };
 
 /**

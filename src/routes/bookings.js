@@ -1,121 +1,141 @@
 import { bookings } from '../db/collections.js';
-import { ObjectId } from 'mongodb';
-import { findServiceById, isNonEmptyString } from '../utils/services.js';
-import { authenticate } from '../middleware/authenticate.js';
+import { bookingCreateLimiter } from '../middleware/rateLimit.js';
+import {
+  BOOKING_TEXT_LIMITS,
+  badRequest,
+  findServiceById,
+  forbidden,
+  isBoundedString,
+  isNonEmptyString,
+  notFound,
+  toObjectId,
+} from '../utils/services.js';
+import { findBookingById, isBookingStatus, statusFilter } from '../utils/bookings.js';
 
 /**
  * Customer booking routes.
- * All routes are under /api and require valid authentication.
- * Customer identity is derived from the verified JWT (req.user), never trusted from client input.
+ * All routes are under /api and already authenticated by the app-level
+ * `authenticate` middleware; customer identity comes only from `req.user`.
  */
+
+const MAX_LIST_RESULTS = 200;
 
 export function bookingsRoutes(app) {
   // POST /api/bookings — Create a booking request
-  app.post('/api/bookings', authenticate, async (req, res, next) => {
+  app.post('/api/bookings', bookingCreateLimiter, async (req, res, next) => {
     try {
       // Admins cannot create customer bookings
       if (req.user.role === 'admin') {
-        return res.status(403).json({ error: { status: 403, message: 'Admins cannot create customer bookings' } });
+        return forbidden(res, 'Admins cannot create customer bookings');
       }
 
-      // Derive customer identity from verified authentication — never trust client-provided IDs
       const customerId = req.user.id;
       const { serviceId, eventDate, eventLocation, message } = req.body ?? {};
 
-      // Validate required fields
-      if (!serviceId || typeof serviceId !== 'string') {
-        return res.status(400).json({ error: { status: 400, message: 'serviceId is required' } });
+      if (!isNonEmptyString(serviceId)) {
+        return badRequest(res, 'serviceId is required');
       }
-      if (!eventDate) {
-        return res.status(400).json({ error: { status: 400, message: 'eventDate is required' } });
+      const serviceObjectId = toObjectId(serviceId);
+      if (!serviceObjectId) {
+        return badRequest(res, 'serviceId must be a valid service id');
+      }
+      if (typeof eventDate !== 'string' || eventDate.trim().length === 0) {
+        return badRequest(res, 'eventDate is required');
+      }
+      const parsedEventDate = new Date(eventDate);
+      if (Number.isNaN(parsedEventDate.getTime())) {
+        return badRequest(res, 'Invalid eventDate format');
+      }
+      if (
+        eventLocation !== undefined &&
+        (typeof eventLocation !== 'string' || eventLocation.length > BOOKING_TEXT_LIMITS.eventLocation)
+      ) {
+        return badRequest(res, `eventLocation must be a string of at most ${BOOKING_TEXT_LIMITS.eventLocation} characters`);
+      }
+      if (message !== undefined && typeof message !== 'string') {
+        return badRequest(res, 'message must be a string');
+      }
+      if (typeof message === 'string' && message.length > BOOKING_TEXT_LIMITS.message) {
+        return badRequest(res, `message must be at most ${BOOKING_TEXT_LIMITS.message} characters`);
       }
 
-      // Look up the service — validates service exists and is valid
       const service = await findServiceById(serviceId);
-      if (!service) {
-        return res.status(404).json({ error: { status: 404, message: 'Service not found' } });
-      }
+      if (!service) return notFound(res, 'Service not found');
 
       // Only approved and active services can be booked
       if (service.approved !== true || service.status !== 'active') {
-        return res.status(400).json({ error: { status: 400, message: 'Service must be approved and active to be booked' } });
+        return badRequest(res, 'Service must be approved and active to be booked');
       }
 
       // Vendors cannot book their own services
       if (service.vendorId === customerId) {
-        return res.status(400).json({ error: { status: 400, message: 'Vendors cannot book their own services' } });
+        return badRequest(res, 'Vendors cannot book their own services');
       }
 
-      // Parse eventDate as Date
-      const parsedEventDate = new Date(eventDate);
-      if (isNaN(parsedEventDate.getTime())) {
-        return res.status(400).json({ error: { status: 400, message: 'Invalid eventDate format' } });
-      }
-
-      // Prevent duplicate active booking requests for the same service and event date
-      // Check for existing Pending bookings for the same service and event date by the same customer
+      // Matches the partial unique index: one pending request per service + customer.
       const duplicateBooking = await bookings.findOne({
-        serviceId: new ObjectId(serviceId),
+        serviceId: serviceObjectId,
         customerId,
-        eventDate: parsedEventDate,
-        status: 'Pending'
+        status: statusFilter('pending'),
       });
-
       if (duplicateBooking) {
-        return res.status(400).json({ error: { status: 400, message: 'You already have a pending booking request for this service on this event date' } });
+        return res.status(409).json({
+          error: { status: 409, message: 'You already have a pending booking request for this service' },
+        });
       }
 
-      // Create the booking — server sets vendorId, status, and createdAt
-      const createdAt = new Date();
       const bookingDoc = {
-        serviceId: new ObjectId(serviceId),
+        serviceId: serviceObjectId,
         vendorId: service.vendorId,
         customerId,
         eventDate: parsedEventDate,
         eventLocation: eventLocation || '',
         message: message || '',
-        status: 'Pending',
-        createdAt
+        status: 'pending',
+        createdAt: new Date(),
       };
 
-      const result = await bookings.insertOne(bookingDoc);
-
-      res.status(201).json({ ...bookingDoc, _id: result.insertedId });
+      try {
+        const result = await bookings.insertOne(bookingDoc);
+        return res.status(201).json({ ...bookingDoc, _id: result.insertedId });
+      } catch (err) {
+        // Duplicate key from the partial unique index (concurrent requests).
+        if (err?.code === 11000) {
+          return res.status(409).json({
+            error: { status: 409, message: 'You already have a pending booking request for this service' },
+          });
+        }
+        throw err;
+      }
     } catch (err) {
       next(err);
     }
   });
 
   // GET /api/bookings — Get own bookings
-  app.get('/api/bookings', authenticate, async (req, res, next) => {
+  app.get('/api/bookings', async (req, res, next) => {
     try {
-      const customerId = req.user.id;
-      const list = await bookings.find({ customerId }).sort({ createdAt: -1 }).toArray();
+      const list = await bookings
+        .find({ customerId: req.user.id })
+        .sort({ createdAt: -1 })
+        .limit(MAX_LIST_RESULTS)
+        .toArray();
       res.status(200).json({ bookings: list });
     } catch (err) {
       next(err);
     }
   });
 
-  // GET /api/bookings/:id — Get booking details
-  app.get('/api/bookings/:id', authenticate, async (req, res, next) => {
+  // GET /api/bookings/:id — Get booking details (customer, owning vendor, admin)
+  app.get('/api/bookings/:id', async (req, res, next) => {
     try {
-      const { id } = req.params;
-      let objectId;
-      try {
-        objectId = new ObjectId(id);
-      } catch {
-        return res.status(400).json({ error: { status: 400, message: 'Invalid booking ID' } });
-      }
+      const booking = await findBookingById(req.params.id);
+      if (!booking) return notFound(res, 'Booking not found');
 
-      const booking = await bookings.findOne({ _id: objectId });
-      if (!booking) {
-        return res.status(404).json({ error: { status: 404, message: 'Booking not found' } });
-      }
-
-      // Check authorization — user can only see their own bookings
-      if (booking.customerId !== req.user.id) {
-        return res.status(403).json({ error: { status: 403, message: 'You do not have access to this booking' } });
+      const isCustomer = booking.customerId === req.user.id;
+      const isVendor = booking.vendorId === req.user.id;
+      if (!isCustomer && !isVendor && req.user.role !== 'admin') {
+        return forbidden(res, 'You do not have access to this booking');
       }
 
       res.status(200).json(booking);
@@ -124,35 +144,25 @@ export function bookingsRoutes(app) {
     }
   });
 
-  // PATCH /api/bookings/:id/cancel — Cancel pending booking
-  app.patch('/api/bookings/:id/cancel', authenticate, async (req, res, next) => {
+  // PATCH /api/bookings/:id/cancel — Cancel own pending booking
+  app.patch('/api/bookings/:id/cancel', async (req, res, next) => {
     try {
-      const { id } = req.params;
-      let objectId;
-      try {
-        objectId = new ObjectId(id);
-      } catch {
-        return res.status(400).json({ error: { status: 400, message: 'Invalid booking ID' } });
-      }
+      const booking = await findBookingById(req.params.id);
+      if (!booking) return notFound(res, 'Booking not found');
 
-      const booking = await bookings.findOne({ _id: objectId });
-      if (!booking) {
-        return res.status(404).json({ error: { status: 404, message: 'Booking not found' } });
-      }
-
-      // Check authorization — user can only cancel their own bookings
       if (booking.customerId !== req.user.id) {
-        return res.status(403).json({ error: { status: 403, message: 'You do not have access to cancel this booking' } });
+        return forbidden(res, 'You do not have access to cancel this booking');
+      }
+      if (!isBookingStatus(booking.status, 'pending')) {
+        return badRequest(res, 'Only pending bookings can be cancelled');
       }
 
-      // Only Pending bookings can be cancelled
-      if (booking.status !== 'Pending') {
-        return res.status(400).json({ error: { status: 400, message: 'Only pending bookings can be cancelled' } });
-      }
+      await bookings.updateOne(
+        { _id: booking._id, status: statusFilter('pending') },
+        { $set: { status: 'cancelled' } }
+      );
 
-      await bookings.updateOne({ _id: objectId }, { $set: { status: 'Cancelled' } });
-
-      const updated = await bookings.findOne({ _id: objectId });
+      const updated = await bookings.findOne({ _id: booking._id });
       res.status(200).json(updated);
     } catch (err) {
       next(err);

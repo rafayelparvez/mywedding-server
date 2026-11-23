@@ -1,8 +1,9 @@
 import { services } from '../db/collections.js';
 import { findServiceById } from '../utils/services.js';
-import { authenticate } from '../middleware/authenticate.js';
 import { requireVendor } from '../middleware/authorize.js';
-import { uploadImage, SUPPORTED_IMAGE_TYPES, MAX_FILE_SIZE } from '../utils/imgbb.js';
+import { uploadSingleImage } from '../middleware/upload.js';
+import { imageUploadLimiter } from '../middleware/rateLimit.js';
+import { uploadImage } from '../utils/imgbb.js';
 
 /**
  * Service image upload routes.
@@ -18,7 +19,7 @@ import { uploadImage, SUPPORTED_IMAGE_TYPES, MAX_FILE_SIZE } from '../utils/imgb
  * The service must be in a state where images can be added (pending/approved but not yet having images, or active).
  */
 export function serviceImageRoutes(app) {
-  app.post('/api/services/:id/image', authenticate, requireVendor, async (req, res, next) => {
+  app.post('/api/services/:id/image', imageUploadLimiter, uploadSingleImage, requireVendor, async (req, res, next) => {
     try {
       const { id } = req.params;
 
@@ -39,7 +40,8 @@ export function serviceImageRoutes(app) {
       }
 
       // Upload to ImgBB
-      const hostedUrl = await uploadImage(req.file.buffer, req.file.mimeType);
+      // multer exposes the declared type as `mimetype` (lowercase).
+      const hostedUrl = await uploadImage(req.file.buffer, req.file.mimetype);
 
       // Update the service — append the image URL to the existing images array
       const existingImages = service.images || [];
@@ -56,7 +58,7 @@ export function serviceImageRoutes(app) {
   });
 
   // GET /api/services/:id/images — Get all images for a service
-  app.get('/api/services/:id/images', authenticate, async (req, res, next) => {
+  app.get('/api/services/:id/images', async (req, res, next) => {
     try {
       const { id } = req.params;
 

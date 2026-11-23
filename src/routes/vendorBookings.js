@@ -1,26 +1,60 @@
 import { bookings } from '../db/collections.js';
-import { ObjectId } from 'mongodb';
-import { findServiceById, getUserById, isPremiumVendor } from '../utils/services.js';
-import { authenticate } from '../middleware/authenticate.js';
 import { requireVendor } from '../middleware/authorize.js';
+import { badRequest, forbidden, notFound } from '../utils/services.js';
+import { findBookingById, isBookingStatus, statusFilter } from '../utils/bookings.js';
 
 /**
  * Vendor booking management routes.
- * All routes require valid authentication and vendor role.
- * A vendor can only manage booking requests for their own services.
+ * All routes are under /api and already authenticated; `requireVendor` enforces
+ * the vendor role. A vendor can only manage bookings for their own services.
  */
 
-export function vendorBookingsRoutes(app) {
-  // GET /api/bookings/vendor — Get booking requests for own services
-  app.get('/api/bookings/vendor', authenticate, requireVendor, async (req, res, next) => {
-    try {
-      const vendorId = req.user.id;
+const MAX_LIST_RESULTS = 200;
 
-      // Get all pending booking requests for services owned by this vendor
-      // We query bookings where vendorId matches and status is Pending
+/** Loads a booking and verifies the current vendor owns it. Responds on failure. */
+async function loadOwnedBooking(req, res) {
+  const booking = await findBookingById(req.params.id);
+  if (!booking) {
+    notFound(res, 'Booking not found');
+    return null;
+  }
+  if (booking.vendorId !== req.user.id) {
+    forbidden(res, 'You do not have access to manage this booking');
+    return null;
+  }
+  return booking;
+}
+
+async function setStatus(req, res, next, nextStatus) {
+  try {
+    const booking = await loadOwnedBooking(req, res);
+    if (!booking) return;
+
+    if (!isBookingStatus(booking.status, 'pending')) {
+      return badRequest(res, 'Only pending requests can be accepted or rejected');
+    }
+
+    // Guard on the old status so two concurrent decisions cannot overwrite each other.
+    await bookings.updateOne(
+      { _id: booking._id, status: statusFilter('pending') },
+      { $set: { status: nextStatus, respondedAt: new Date() } }
+    );
+
+    const updated = await bookings.findOne({ _id: booking._id });
+    res.status(200).json(updated);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export function vendorBookingsRoutes(app) {
+  // GET /api/bookings/vendor — Pending requests for the vendor's own services
+  app.get('/api/bookings/vendor', requireVendor, async (req, res, next) => {
+    try {
       const list = await bookings
-        .find({ vendorId, status: 'Pending' })
+        .find({ vendorId: req.user.id, status: statusFilter('pending') })
         .sort({ createdAt: -1 })
+        .limit(MAX_LIST_RESULTS)
         .toArray();
 
       res.status(200).json({ bookings: list });
@@ -29,73 +63,13 @@ export function vendorBookingsRoutes(app) {
     }
   });
 
-  // PATCH /api/bookings/:id/accept — Accept booking
-  app.patch('/api/bookings/:id/accept', authenticate, requireVendor, async (req, res, next) => {
-    try {
-      const { id } = req.params;
-      let objectId;
-      try {
-        objectId = new ObjectId(id);
-      } catch {
-        return res.status(400).json({ error: { status: 400, message: 'Invalid booking ID' } });
-      }
+  // PATCH /api/bookings/:id/accept — Accept a pending request
+  app.patch('/api/bookings/:id/accept', requireVendor, (req, res, next) =>
+    setStatus(req, res, next, 'accepted')
+  );
 
-      const booking = await bookings.findOne({ _id: objectId });
-      if (!booking) {
-        return res.status(404).json({ error: { status: 404, message: 'Booking not found' } });
-      }
-
-      // Check authorization — vendor can only manage their own service bookings
-      if (booking.vendorId !== req.user.id) {
-        return res.status(403).json({ error: { status: 403, message: 'You do not have access to manage this booking' } });
-      }
-
-      // Only Pending requests can be accepted or rejected
-      if (booking.status !== 'Pending') {
-        return res.status(400).json({ error: { status: 400, message: 'Only pending requests can be accepted or rejected' } });
-      }
-
-      await bookings.updateOne({ _id: objectId }, { $set: { status: 'Accepted' } });
-
-      const updated = await bookings.findOne({ _id: objectId });
-      res.status(200).json(updated);
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  // PATCH /api/bookings/:id/reject — Reject booking
-  app.patch('/api/bookings/:id/reject', authenticate, requireVendor, async (req, res, next) => {
-    try {
-      const { id } = req.params;
-      let objectId;
-      try {
-        objectId = new ObjectId(id);
-      } catch {
-        return res.status(400).json({ error: { status: 400, message: 'Invalid booking ID' } });
-      }
-
-      const booking = await bookings.findOne({ _id: objectId });
-      if (!booking) {
-        return res.status(404).json({ error: { status: 404, message: 'Booking not found' } });
-      }
-
-      // Check authorization — vendor can only manage their own service bookings
-      if (booking.vendorId !== req.user.id) {
-        return res.status(403).json({ error: { status: 403, message: 'You do not have access to manage this booking' } });
-      }
-
-      // Only Pending requests can be accepted or rejected
-      if (booking.status !== 'Pending') {
-        return res.status(400).json({ error: { status: 400, message: 'Only pending requests can be accepted or rejected' } });
-      }
-
-      await bookings.updateOne({ _id: objectId }, { $set: { status: 'Rejected' } });
-
-      const updated = await bookings.findOne({ _id: objectId });
-      res.status(200).json(updated);
-    } catch (err) {
-      next(err);
-    }
-  });
+  // PATCH /api/bookings/:id/reject — Reject a pending request
+  app.patch('/api/bookings/:id/reject', requireVendor, (req, res, next) =>
+    setStatus(req, res, next, 'rejected')
+  );
 }
